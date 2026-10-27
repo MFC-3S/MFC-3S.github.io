@@ -48,6 +48,7 @@ button{font:inherit;cursor:pointer}
 .holdleft b{color:var(--sp);font-size:18px}
 .stepper{display:flex;align-items:center;justify-content:space-between}
 .stepper button{width:48px;height:44px;border-radius:12px;border:1px solid var(--line);background:#f3efeb;font-size:22px}
+.stepper button:disabled{opacity:.4}
 .stepper .v{font-size:24px;font-weight:700;color:var(--sp);text-align:center;line-height:1.1}
 .stepper .v small{display:block;font-size:12px;color:var(--muted);font-weight:500}
 .seg{display:flex;background:#f1ece7;border-radius:10px;padding:3px;gap:3px}
@@ -178,8 +179,13 @@ body.offline .actions{display:none}
       </div>
 
       <div class="card" style="margin-bottom:10px">
-        <h3>Agitator</h3>
-        <div class="seg motor" id="agiSeg"></div>
+        <h3><span>Agitator</span><span class="note" style="text-transform:none;letter-spacing:0">15–30 RPM, this roast only</span></h3>
+        <div class="seg motor" id="agiSeg"><button data-v="0">Off</button><button data-v="1">On</button></div>
+        <div class="stepper" style="margin-top:8px">
+          <button id="rMinus">−</button>
+          <div class="v" id="rpmVal" style="color:var(--motor)">—</div>
+          <button id="rPlus">+</button>
+        </div>
         <div class="note" style="margin-top:6px" id="agiNote">Off turns the heater off too (beans would scorch).</div>
       </div>
       <div class="info">The roast keeps running if your phone disconnects.</div>
@@ -198,11 +204,8 @@ body.offline .actions{display:none}
       <div class="field"><span>Target temperature <span class="note" id="edTgtC"></span></span><span><input type="number" id="edT" inputmode="numeric" step="1"> °F</span></div>
       <div class="field"><span>Ramp rate</span><span><input type="number" id="edR" inputmode="decimal" step="1"> °F/min</span></div>
       <div class="field"><span>Hold at target</span><span><input type="number" id="edH" inputmode="decimal" step="0.5"> min</span></div>
-      <div class="field" style="display:block">
-        <div style="margin-bottom:6px">Agitator during roast</div>
-        <div class="seg motor" id="edAgi"></div>
-      </div>
-      <div class="note">Cooling always runs the agitator on High.</div>
+      <div class="field"><span>Agitator speed</span><span><input type="number" id="edRpm" inputmode="numeric" min="15" max="30" step="1"> RPM</span></div>
+      <div class="note">15–30 RPM. Used for the whole roast and for cooling. 30 RPM is the maximum.</div>
     </div>
     <div class="card">
       <h3>Estimated timeline</h3>
@@ -396,10 +399,10 @@ async function linkLost() {
 // Polling (twice a second)
 // ======================================================================
 const F = c => c * 1.8 + 32;
-const AGI = ['Off', 'Low', 'Med', 'High'];
+const RPM_MIN = 15, RPM_MAX = 30;   // must match RoasterApp.ino
 const SW = ['#b8875a', '#7a4a26', '#3d2414'];
 let S = null, D = null, P = [], profVer = -1, lastVer = -1, lastEv = -1, fails = 0, polling = false;
-let editIdx = -1, edAgi = 2, histTimer = null;
+let editIdx = -1, histTimer = null;
 
 const mmss = s => { s = Math.max(0, Math.round(s)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
 const fmtF = c => (c == null ? '--' : F(c).toFixed(0)) + ' °F';
@@ -485,7 +488,7 @@ function renderIdle() {
   if (p) {
     $('pRamp').textContent = `${p.rF} °F/min (${(p.rF / 1.8).toFixed(1)} °C/min)`;
     $('pHold').textContent = mmss(p.hold);
-    $('pAgi').textContent = AGI[p.agi];
+    $('pAgi').textContent = `${p.rpm} RPM`;
   }
 
   $('cTc').textContent = S.tcOk ? '✓ OK' : '✗ ' + S.tcErr;
@@ -542,14 +545,12 @@ function renderRoast(roasting) {
   $('adjustCard').classList.toggle('hidden', !roasting);
   if (S.tgt != null) $('adjVal').innerHTML = `${F(S.tgt).toFixed(0)} °F<small>${S.tgt.toFixed(0)} °C</small>`;
 
-  const seg = $('agiSeg');
-  if (!seg.children.length) {
-    seg.innerHTML = AGI.map((n, i) => `<button data-p="${i}">${n}</button>`).join('');
-    [...seg.children].forEach(b => b.onclick = () => api('agi ' + b.dataset.p));
-  }
-  [...seg.children].forEach((b, i) => { b.classList.toggle('on', i === S.agi); b.disabled = !roasting; });
-  $('agiNote').textContent = roasting ? (S.agi === 0 ? 'Agitator off: heater is paused.' : 'Off turns the heater off too (beans would scorch).')
-                                      : 'Agitator runs on High while cooling.';
+  [...$('agiSeg').children].forEach(b => { b.classList.toggle('on', +b.dataset.v === S.agiOn); b.disabled = !roasting; });
+  $('rpmVal').innerHTML = `${S.rpm} RPM<small>${S.agiOn ? 'running' : 'stopped'}</small>`;
+  $('rMinus').disabled = S.rpm <= RPM_MIN;
+  $('rPlus').disabled = S.rpm >= RPM_MAX;
+  $('agiNote').textContent = roasting ? (S.agiOn ? 'Off turns the heater off too (beans would scorch).' : 'Agitator off: heater is paused.')
+                                      : `Agitator keeps turning at ${S.rpm} RPM while cooling.`;
 }
 
 function renderActions(roasting, idle) {
@@ -582,12 +583,14 @@ $('bConnect').onclick = connectClicked;
 $('cBeans').onchange = e => api('beans ' + (e.target.checked ? 1 : 0));
 $('tMinus').onclick = () => api('target -5');
 $('tPlus').onclick = () => api('target 5');
+[...$('agiSeg').children].forEach(b => b.onclick = () => api('agi ' + b.dataset.v));
+$('rMinus').onclick = () => S && api('rpm ' + Math.max(RPM_MIN, S.rpm - 1));
+$('rPlus').onclick = () => S && api('rpm ' + Math.min(RPM_MAX, S.rpm + 1));
 
 // ======================================================================
 // Profile editor
 // ======================================================================
 function edRender() {
-  [...$('edAgi').children].forEach((b, i) => b.classList.toggle('on', i + 1 === edAgi));
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
   $('edTgtC').textContent = isNaN(t) ? '' : `(${((t - 32) / 1.8).toFixed(0)} °C)`;
   const fromF = S && S.tC != null ? F(S.tC) : 75;
@@ -604,21 +607,21 @@ function edRender() {
 }
 function openEditor(i) {
   const p = P[i]; if (!p) return;
-  editIdx = i; edAgi = p.agi;
+  editIdx = i;
   $('edTitle').textContent = p.name + ' profile';
-  $('edT').value = p.tF; $('edR').value = p.rF; $('edH').value = +(p.hold / 60).toFixed(2);
+  $('edT').value = p.tF; $('edR').value = p.rF; $('edH').value = +(p.hold / 60).toFixed(2); $('edRpm').value = p.rpm;
   edRender();
   $('editor').classList.add('open');
 }
-$('edAgi').innerHTML = ['Low', 'Med', 'High'].map((n, i) => `<button data-p="${i + 1}">${n}</button>`).join('');
-[...$('edAgi').children].forEach(b => b.onclick = () => { edAgi = +b.dataset.p; edRender(); });
 ['edT', 'edR', 'edH'].forEach(id => $(id).oninput = edRender);
 $('editBtn').onclick = () => S && openEditor(S.prof);
 $('edBack').onclick = $('edCancel').onclick = () => $('editor').classList.remove('open');
 $('edSave').onclick = async () => {
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
-  if ([t, r, h].some(isNaN)) { toast('Fill in every field'); return; }
-  if (await api(`profile ${editIdx} ${t} ${r} ${Math.round(h * 60)} ${edAgi}`)) $('editor').classList.remove('open');
+  const rpm = parseFloat($('edRpm').value);
+  if ([t, r, h, rpm].some(isNaN)) { toast('Fill in every field'); return; }
+  if (rpm < RPM_MIN || rpm > RPM_MAX) { toast('Agitator speed must be 15-30 RPM'); return; }
+  if (await api(`profile ${editIdx} ${t} ${r} ${Math.round(h * 60)} ${Math.round(rpm)}`)) $('editor').classList.remove('open');
 };
 $('edReset').onclick = async () => {
   if (!confirm('Restore this profile to its default values?')) return;
@@ -658,7 +661,8 @@ function renderDevLog() {
   $('devLog').textContent =
     `state ${S.st} · setpoint ${S.sp == null ? '—' : S.sp.toFixed(1) + ' °C'}\n` +
     `P ${D.pP.toFixed(1)} · I ${D.pI.toFixed(1)} · D ${D.pD.toFixed(1)} · out ${S.duty.toFixed(1)}%\n` +
-    `agitator ${AGI[S.agi]} (${D.mot}% PWM) · Bluetooth${MOCK ? ' (mock)' : ''} · uptime ${mmss(D.up)}`;
+    `agitator ${D.cal ? 'CALIBRATING' : S.agiOn ? S.rpm + ' RPM' : 'off'} (${D.mot}% PWM) · calibration 15 RPM = ${D.d15}%, 30 RPM = ${D.d30}%\n` +
+    `Bluetooth${MOCK ? ' (mock)' : ''} · uptime ${mmss(D.up)}`;
 }
 
 // History is read in chunks: write "hist <n>", then read HISTORY (binary, see RoasterApp.ino).
