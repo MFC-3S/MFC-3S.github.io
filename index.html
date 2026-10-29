@@ -184,8 +184,8 @@ body.offline .actions{display:none}
 
       <div class="card" style="margin-bottom:10px">
         <h3><span>Agitator</span><span class="note" style="text-transform:none;letter-spacing:0">duty %, this roast only</span></h3>
-        <div class="slrow"><input type="range" id="agiSlider" min="0" max="20" step="0.5"><b id="agiVal">—</b></div>
-        <div class="ticks" style="padding-right:74px"><span id="agiTickMin">Off</span><span>10 %</span><span>20 %</span></div>
+        <div class="slrow"><input type="range" id="agiSlider" min="0" max="100" step="1"><b id="agiVal">—</b></div>
+        <div class="ticks" style="padding-right:74px"><span id="agiTickMin">Off</span><span>50 %</span><span>100 %</span></div>
         <div class="note" style="margin-top:6px" id="agiNote">0 % turns the heater off too (beans would scorch).</div>
       </div>
       <div class="info">The roast keeps running if your phone disconnects.</div>
@@ -206,10 +206,10 @@ body.offline .actions{display:none}
       <div class="field"><span>Hold at target</span><span><input type="number" id="edH" inputmode="decimal" step="0.5"> min</span></div>
       <div class="field" style="display:block">
         <div style="display:flex;justify-content:space-between"><span>Agitator duty</span><b id="edDutyVal" style="color:var(--motor)">—</b></div>
-        <div class="slrow"><input type="range" id="edDuty" min="1" max="20" step="0.5"></div>
-        <div class="ticks"><span>1 %</span><span>10 %</span><span>20 %</span></div>
+        <div class="slrow"><input type="range" id="edDuty" min="1" max="100" step="1"></div>
+        <div class="ticks"><span>1 %</span><span>50 %</span><span>100 %</span></div>
       </div>
-      <div class="note">1–20 % PWM duty. Used for the whole roast and for cooling. 20 % is the maximum.</div>
+      <div class="note">1–100 % PWM duty. Used for the whole roast and for cooling.</div>
     </div>
     <div class="card">
       <h3>Estimated timeline</h3>
@@ -403,7 +403,7 @@ async function linkLost() {
 // Polling (twice a second)
 // ======================================================================
 const F = c => c * 1.8 + 32;
-const DUTY_MAX = 20, DUTY_PROFILE_MIN = 1;   // agitator duty %, must match RoasterApp.ino
+const DUTY_MAX = 100, DUTY_PROFILE_MIN = 1;   // agitator duty %, must match RoasterApp.ino
 const pct = v => (+v).toFixed(1).replace(/\.0$/, '') + ' %';
 const SW = ['#b8875a', '#7a4a26', '#3d2414'];
 let S = null, D = null, P = [], profVer = -1, lastVer = -1, lastEv = -1, fails = 0, polling = false;
@@ -550,7 +550,7 @@ function renderRoast(roasting) {
   $('adjustCard').classList.toggle('hidden', !roasting);
   if (S.tgt != null) $('adjVal').innerHTML = `${F(S.tgt).toFixed(0)} °F<small>${S.tgt.toFixed(0)} °C</small>`;
 
-  // Agitator slider: 0-20 % while roasting (0 = off), 1-20 % while cooling.
+  // Agitator slider: 0-100 % while roasting (0 = off), 1-100 % while cooling.
   const sl = $('agiSlider');
   sl.min = roasting ? 0 : DUTY_PROFILE_MIN;
   $('agiTickMin').textContent = roasting ? 'Off' : DUTY_PROFILE_MIN + ' %';
@@ -631,7 +631,7 @@ $('edSave').onclick = async () => {
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
   const duty = parseFloat($('edDuty').value);
   if ([t, r, h, duty].some(isNaN)) { toast('Fill in every field'); return; }
-  if (duty < DUTY_PROFILE_MIN || duty > DUTY_MAX) { toast('Agitator duty must be 1-20 %'); return; }
+  if (duty < DUTY_PROFILE_MIN || duty > DUTY_MAX) { toast('Agitator duty must be 1-100 %'); return; }
   if (await api(`profile ${editIdx} ${t} ${r} ${Math.round(h * 60)} ${duty}`)) $('editor').classList.remove('open');
 };
 $('edReset').onclick = async () => {
@@ -672,7 +672,7 @@ function renderDevLog() {
   $('devLog').textContent =
     `state ${S.st} · setpoint ${S.sp == null ? '—' : S.sp.toFixed(1) + ' °C'}\n` +
     `P ${D.pP.toFixed(1)} · I ${D.pI.toFixed(1)} · D ${D.pD.toFixed(1)} · out ${S.duty.toFixed(1)}%\n` +
-    `agitator ${D.mtest ? 'TEST ' : ''}${S.agiOn ? 'on' : 'off'} · motor PWM ${D.mot}% (cap ${D.dMax}%)\n` +
+    `agitator ${D.mtest ? 'TEST ' : ''}${S.agiOn ? 'on' : 'off'} · motor PWM ${D.mot}% (max ${D.dMax}%)\n` +
     `Bluetooth${MOCK ? ' (mock)' : ''} · uptime ${mmss(D.up)}`;
 }
 
