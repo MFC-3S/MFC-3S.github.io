@@ -171,6 +171,7 @@ body.offline .actions{display:none}
         <div class="stagelbl"><span id="lbRamp">Ramp</span><span id="lbHold">Hold</span><span id="lbCool">Cool</span></div>
         <div class="holdleft"><span id="holdLbl">Hold time</span><b id="holdVal">—</b></div>
         <div class="note" id="crackTxt" style="margin-top:6px"></div>
+        <div class="note" id="limTxt"></div>
       </div>
 
       <div class="card" id="adjustCard" style="margin-bottom:10px">
@@ -202,7 +203,7 @@ body.offline .actions{display:none}
     <div class="card">
       <h3>Profile settings</h3>
       <div class="field"><span>Target temperature <span class="note" id="edTgtC"></span></span><span><input type="number" id="edT" inputmode="numeric" step="1"> °F</span></div>
-      <div class="field"><span>Ramp rate</span><span><input type="number" id="edR" inputmode="decimal" step="1"> °F/min</span></div>
+      <div class="field"><span>Ramp rate <span class="note">0 = instant</span></span><span><input type="number" id="edR" inputmode="decimal" min="0" step="any"> °F/min</span></div>
       <div class="field"><span>Hold at target</span><span><input type="number" id="edH" inputmode="decimal" step="0.5"> min</span></div>
       <div class="field" style="display:block">
         <div style="display:flex;justify-content:space-between"><span>Agitator duty</span><b id="edDutyVal" style="color:var(--motor)">—</b></div>
@@ -491,7 +492,7 @@ function renderIdle() {
   [...pb.children].forEach((b, i) => b.classList.toggle('on', i === S.prof));
   const p = P[S.prof];
   if (p) {
-    $('pRamp').textContent = `${p.rF} °F/min (${(p.rF / 1.8).toFixed(1)} °C/min)`;
+    $('pRamp').textContent = rampText(p.rF);
     $('pHold').textContent = mmss(p.hold);
     $('pAgi').textContent = `${pct(p.duty)} duty`;
   }
@@ -546,6 +547,7 @@ function renderRoast(roasting) {
   else                    { $('holdLbl').textContent = 'Heater'; $('holdVal').textContent = 'OFF'; }
 
   $('crackTxt').textContent = S.fc >= 0 ? `1st crack marked at ${mmss(S.fc)} (${fmtF(S.fcT)})` : '';
+  $('limTxt').textContent = roasting ? `Time limit ${Math.round(S.limS / 60)} min, then it cools automatically.` : '';
 
   $('adjustCard').classList.toggle('hidden', !roasting);
   if (S.tgt != null) $('adjVal').innerHTML = `${F(S.tgt).toFixed(0)} °F<small>${S.tgt.toFixed(0)} °C</small>`;
@@ -599,6 +601,10 @@ $('agiSlider').onchange = async e => { e.target._touched = Date.now(); await api
 // ======================================================================
 // Profile editor
 // ======================================================================
+// Same rule as roastLimitMin() in RoasterApp.ino: ramp + hold + 10 min, 25 min .. 4 h.
+const LIMIT_MIN = 25, LIMIT_MARGIN = 10, LIMIT_MAX = 240, RAMP_MAX = 9999;
+const rampText = r => +r === 0 ? 'Instant (no ramp)' : `${+r} °F/min (${(r / 1.8).toFixed(1)} °C/min)`;
+
 function edRender() {
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
   $('edTgtC').textContent = isNaN(t) ? '' : `(${((t - 32) / 1.8).toFixed(0)} °C)`;
@@ -608,11 +614,14 @@ function edRender() {
   const tot = Math.max(ramp + hold, 0.1);
   $('edStages').style.gridTemplateColumns = `${Math.max(ramp / tot, .08)}fr ${Math.max(hold / tot, .08)}fr .25fr`;
   $('edLbl').style.gridTemplateColumns = $('edStages').style.gridTemplateColumns;
-  $('edLbl').children[0].textContent = `Ramp ≈ ${isNaN(ramp) ? '?' : ramp.toFixed(0)} min`;
+  $('edLbl').children[0].textContent = r === 0 ? 'Ramp: instant' : `Ramp ≈ ${isNaN(ramp) ? '?' : ramp.toFixed(ramp < 10 ? 1 : 0)} min`;
   $('edLbl').children[1].textContent = `Hold ${hold} min`;
-  $('edNote').textContent = (ramp + hold > 25)
-    ? `⚠ Ramp + hold ≈ ${(ramp + hold).toFixed(0)} min, over the 25-minute safety limit. Raise the ramp rate or shorten the hold.`
-    : `Estimated from ${fromF.toFixed(0)} °F. The 25-minute safety limit goes to Cool automatically.`;
+  const want = ramp + hold + LIMIT_MARGIN, limit = Math.min(Math.max(want, LIMIT_MIN), LIMIT_MAX);
+  $('edNote').textContent = (want > LIMIT_MAX)
+    ? `⚠ Ramp + hold ≈ ${(ramp + hold).toFixed(0)} min. The roast will be stopped at the ${LIMIT_MAX / 60}-hour maximum. Raise the ramp rate or shorten the hold.`
+    : (r === 0 ? 'Instant: the heater runs as hard as the PID allows until the beans reach the target. '
+               : `Estimated from ${fromF.toFixed(0)} °F. `) +
+      `Time limit for this roast: ${limit.toFixed(0)} min, then it cools automatically.`;
 }
 function openEditor(i) {
   const p = P[i]; if (!p) return;
@@ -631,6 +640,7 @@ $('edSave').onclick = async () => {
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
   const duty = parseFloat($('edDuty').value);
   if ([t, r, h, duty].some(isNaN)) { toast('Fill in every field'); return; }
+  if (r < 0 || r > RAMP_MAX) { toast('Ramp must be 0 (instant) to 9999 °F/min'); return; }
   if (duty < DUTY_PROFILE_MIN || duty > DUTY_MAX) { toast('Agitator duty must be 1-100 %'); return; }
   if (await api(`profile ${editIdx} ${t} ${r} ${Math.round(h * 60)} ${duty}`)) $('editor').classList.remove('open');
 };
