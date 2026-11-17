@@ -125,12 +125,12 @@ body.offline .actions{display:none}
       <div class="hero">
         <div>
           <div class="temp" id="tF">--.-<small>°F</small></div>
-          <div class="tempc" id="tC">--.- °C · bean temp</div>
+          <div class="tempc" id="tC">--.- °C · thermocouple</div>
         </div>
         <div class="timer"><div class="t" id="timer">00:00</div><div class="r">roast time</div></div>
       </div>
       <div id="roastHeroRow" class="hidden">
-        <div class="sprow"><span id="profName">—</span> · target <b id="tgt">—</b><span class="ror" id="dutyTxt">heater 0%</span></div>
+        <div class="sprow"><span id="profName">—</span> · target <b id="tgt">—</b><span class="note" id="aimTxt"></span><span class="ror" id="dutyTxt">heater 0%</span></div>
         <div class="bar"><div id="dutyBar" style="width:0"></div></div>
       </div>
     </div>
@@ -143,6 +143,7 @@ body.offline .actions{display:none}
         <div class="field" style="margin-top:6px"><span>Ramp</span><span id="pRamp">—</span></div>
         <div class="field"><span>Hold at target</span><span id="pHold">—</span></div>
         <div class="field"><span>Agitator</span><span id="pAgi">—</span></div>
+        <div class="field hidden" id="offRow"><span>Thermocouple offset</span><span id="pOff">—</span></div>
       </div>
 
       <div class="card" style="margin-bottom:10px">
@@ -240,7 +241,7 @@ body.offline .actions{display:none}
       <h3><span>Live graph</span><span class="note" style="text-transform:none;letter-spacing:0">last 10 min</span></h3>
       <canvas id="graph" width="600" height="300"></canvas>
       <div class="note" style="margin-top:4px">
-        <span style="color:var(--roast)">━ bean temp</span> &nbsp;
+        <span style="color:var(--roast)">━ thermocouple</span> &nbsp;
         <span style="color:var(--sp)">┅ setpoint</span> &nbsp;
         <span style="color:#d9a98a">▮ heater %</span>
       </div>
@@ -251,6 +252,12 @@ body.offline .actions{display:none}
       <div class="field"><span>Ki <span class="note">%/(°C·s)</span></span><input type="number" id="ki" step="any" inputmode="decimal"></div>
       <div class="field"><span>Kd <span class="note">%/(°C/s)</span></span><input type="number" id="kd" step="any" inputmode="decimal"></div>
       <button class="apply" id="pidApply">Apply (live) and save</button>
+    </div>
+    <div class="card">
+      <h3>Thermocouple offset</h3>
+      <div class="field"><span>Offset <span class="note">−300 to 400 °F</span></span><span><input type="number" id="offIn" min="-300" max="400" step="1" inputmode="numeric"> °F</span></div>
+      <div class="note" id="offInfo">The PID aims for the profile target plus this offset at the thermocouple.</div>
+      <button class="apply" id="offApply">Apply (live) and save</button>
     </div>
     <div class="card">
       <h3>Heater override</h3>
@@ -405,6 +412,9 @@ async function linkLost() {
 // ======================================================================
 const F = c => c * 1.8 + 32;
 const DUTY_MAX = 100, DUTY_PROFILE_MIN = 1;   // agitator duty %, must match RoasterApp.ino
+const OFFSET_MIN = -300, OFFSET_MAX = 400;    // thermocouple offset, F, must match RoasterApp.ino
+const signF = v => (v > 0 ? '+' : '') + v + ' °F';
+const ctrlC = () => S.tgt + S.offF / 1.8;     // what the PID aims for at the thermocouple, C
 const pct = v => (+v).toFixed(1).replace(/\.0$/, '') + ' %';
 const SW = ['#b8875a', '#7a4a26', '#3d2414'];
 let S = null, D = null, P = [], profVer = -1, lastVer = -1, lastEv = -1, fails = 0, polling = false;
@@ -464,8 +474,8 @@ function render() {
 
   // temperature
   if (S.tC == null) { $('tF').innerHTML = '--.-<small>°F</small>'; $('tC').textContent = (S.tcErr || 'No reading'); }
-  else { $('tF').innerHTML = F(S.tC).toFixed(1) + '<small>°F</small>'; $('tC').textContent = S.tC.toFixed(1) + ' °C · bean temp'; }
-  $('tF').style.color = idle ? 'var(--ink)' : (S.tgt != null && S.tC > S.tgt + 3 ? 'var(--warn)' : 'var(--roast)');
+  else { $('tF').innerHTML = F(S.tC).toFixed(1) + '<small>°F</small>'; $('tC').textContent = S.tC.toFixed(1) + ' °C · thermocouple'; }
+  $('tF').style.color = idle ? 'var(--ink)' : (S.tgt != null && S.tC > ctrlC() + 3 ? 'var(--warn)' : 'var(--roast)');
   $('timer').textContent = mmss(S.el < 0 ? 0 : S.el);
   $('timer').style.color = idle ? 'var(--muted)' : 'var(--ink)';
 
@@ -495,6 +505,8 @@ function renderIdle() {
     $('pRamp').textContent = rampText(p.rF);
     $('pHold').textContent = mmss(p.hold);
     $('pAgi').textContent = `${pct(p.duty)} duty`;
+    $('offRow').classList.toggle('hidden', !S.offF);
+    $('pOff').textContent = `${signF(S.offF)} (PID aims ${p.tF + S.offF} °F)`;
   }
 
   $('cTc').textContent = S.tcOk ? '✓ OK' : '✗ ' + S.tcErr;
@@ -529,6 +541,7 @@ function renderRoast(roasting) {
   const st = S.st;
   $('profName').textContent = P[S.prof] ? P[S.prof].name : '';
   $('tgt').textContent = fmtF(S.tgt);
+  $('aimTxt').textContent = S.offF && S.tgt != null ? ` → PID aims ${fmtF(ctrlC())} (${signF(S.offF)})` : '';
   $('dutyTxt').textContent = 'heater ' + Math.round(S.duty) + '%' + (S.man ? ' (manual)' : '');
   $('dutyBar').style.width = S.duty + '%';
 
@@ -609,7 +622,8 @@ function edRender() {
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
   $('edTgtC').textContent = isNaN(t) ? '' : `(${((t - 32) / 1.8).toFixed(0)} °C)`;
   const fromF = S && S.tC != null ? F(S.tC) : 75;
-  const ramp = r > 0 ? Math.max(0, (t - fromF) / r) : 0;
+  const off = S ? S.offF : 0, aim = t + off;          // the ramp runs to target + offset
+  const ramp = r > 0 ? Math.max(0, (aim - fromF) / r) : 0;
   const hold = isNaN(h) ? 0 : h;
   const tot = Math.max(ramp + hold, 0.1);
   $('edStages').style.gridTemplateColumns = `${Math.max(ramp / tot, .08)}fr ${Math.max(hold / tot, .08)}fr .25fr`;
@@ -620,7 +634,7 @@ function edRender() {
   $('edNote').textContent = (want > LIMIT_MAX)
     ? `⚠ Ramp + hold ≈ ${(ramp + hold).toFixed(0)} min. The roast will be stopped at the ${LIMIT_MAX / 60}-hour maximum. Raise the ramp rate or shorten the hold.`
     : (r === 0 ? 'Instant: the heater runs as hard as the PID allows until the beans reach the target. '
-               : `Estimated from ${fromF.toFixed(0)} °F. `) +
+               : `Estimated from ${fromF.toFixed(0)} °F${off ? ` to ${aim.toFixed(0)} °F (target ${signF(off)} offset)` : ''}. `) +
       `Time limit for this roast: ${limit.toFixed(0)} min, then it cools automatically.`;
 }
 function openEditor(i) {
@@ -663,6 +677,7 @@ async function openDev() {
   $('dev').classList.add('open');
   if (conn === 'ok') { try { D = await readJson('dev'); } catch (e) {} }
   if (D) { $('kp').value = D.kp; $('ki').value = D.ki; $('kd').value = D.kd; $('mDuty').value = D.mDuty; }
+  if (S) $('offIn').value = S.offF;
   updateHistory();
   histTimer = setInterval(updateHistory, 2000);
 }
@@ -672,6 +687,11 @@ $('pidApply').onclick = () => {
   if (g.some(isNaN)) { toast('Enter all three gains'); return; }
   api(`pid ${g[0]} ${g[1]} ${g[2]}`);
 };
+$('offApply').onclick = () => {
+  const v = parseFloat($('offIn').value);
+  if (isNaN(v) || v < OFFSET_MIN || v > OFFSET_MAX) { toast('Offset must be -300 to 400 °F'); return; }
+  api('offset ' + Math.round(v));
+};
 const manualDuty = () => { const v = parseFloat($('mDuty').value); return isNaN(v) ? 0 : v; };
 [...$('manSeg').children].forEach(b => b.onclick = () => api(`manual ${b.dataset.v} ${manualDuty()}`));
 $('mSet').onclick = () => api(`manual ${S && S.man ? 1 : 0} ${manualDuty()}`);
@@ -679,6 +699,10 @@ $('mSet').onclick = () => api(`manual ${S && S.man ? 1 : 0} ${manualDuty()}`);
 function renderDevLog() {
   [...$('manSeg').children].forEach(b => b.classList.toggle('on', +b.dataset.v === S.man));
   if (!D) return;
+  const ex = P[S.prof] ? P[S.prof].tF : 410;
+  $('offInfo').textContent =
+    `Now ${signF(S.offF)}. The PID aims for the profile target plus this offset at the thermocouple ` +
+    `(e.g. ${ex} °F → ${ex + S.offF} °F). Over-temp cutoff: ${D.otF} °F (never above 900 °F).`;
   $('devLog').textContent =
     `state ${S.st} · setpoint ${S.sp == null ? '—' : S.sp.toFixed(1) + ' °C'}\n` +
     `P ${D.pP.toFixed(1)} · I ${D.pI.toFixed(1)} · D ${D.pD.toFixed(1)} · out ${S.duty.toFixed(1)}%\n` +
