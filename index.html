@@ -143,6 +143,7 @@ body.offline .actions{display:none}
         <div class="field" style="margin-top:6px"><span>Ramp</span><span id="pRamp">—</span></div>
         <div class="field"><span>Hold at target</span><span id="pHold">—</span></div>
         <div class="field"><span>Agitator</span><span id="pAgi">—</span></div>
+        <div class="field"><span>Over-temp cutoff</span><span id="pCut">—</span></div>
       </div>
 
       <div class="card" style="margin-bottom:10px">
@@ -202,8 +203,8 @@ body.offline .actions{display:none}
   <div class="content">
     <div class="card">
       <h3>Profile settings</h3>
-      <div class="field"><span>Target temperature <span class="note" id="edTgtC"></span></span><span><input type="number" id="edT" inputmode="numeric" step="1"> °F</span></div>
-      <div class="field"><span>Ramp rate <span class="note">0 = instant</span></span><span><input type="number" id="edR" inputmode="decimal" min="0" step="any"> °F/min</span></div>
+      <div class="field"><span>Target temperature <span class="note" id="edTgtC"></span></span><span><input type="number" id="edT" inputmode="numeric" min="100" max="1000" step="1"> °F</span></div>
+      <div class="field"><span>Ramp rate <span class="note">max 150</span></span><span><input type="number" id="edR" inputmode="decimal" min="0.1" max="150" step="any"> °F/min</span></div>
       <div class="field"><span>Hold at target</span><span><input type="number" id="edH" inputmode="decimal" step="0.5"> min</span></div>
       <div class="field" style="display:block">
         <div style="display:flex;justify-content:space-between"><span>Agitator duty</span><b id="edDutyVal" style="color:var(--motor)">—</b></div>
@@ -255,7 +256,7 @@ body.offline .actions{display:none}
     <div class="card">
       <h3>Heater override</h3>
       <div class="seg" id="manSeg"><button data-v="0">PID</button><button data-v="1">Manual</button></div>
-      <div class="field"><span>Manual duty</span><span><input type="number" id="mDuty" min="0" max="100" step="1" inputmode="numeric"> % <button class="mini" id="mSet">Set</button></span></div>
+      <div class="field"><span>Manual duty</span><span><input type="number" id="mDuty" min="0" max="80" step="1" inputmode="numeric"> % <button class="mini" id="mSet">Set</button></span></div>
       <div class="note">Manual duty only applies while roasting (Ramp/Hold).</div>
       <div class="log" id="devLog" style="margin-top:8px"></div>
     </div>
@@ -405,6 +406,8 @@ async function linkLost() {
 // ======================================================================
 const F = c => c * 1.8 + 32;
 const DUTY_MAX = 100, DUTY_PROFILE_MIN = 1;   // agitator duty %, must match RoasterApp.ino
+const HEAT_DUTY_MAX = 80;                     // heater duty cap, %, must match RoasterApp.ino
+const TARGET_MIN = 100, TARGET_MAX = 1000, OVERTEMP_MARGIN = 50;   // F, must match RoasterApp.ino
 const pct = v => (+v).toFixed(1).replace(/\.0$/, '') + ' %';
 const SW = ['#b8875a', '#7a4a26', '#3d2414'];
 let S = null, D = null, P = [], profVer = -1, lastVer = -1, lastEv = -1, fails = 0, polling = false;
@@ -495,6 +498,7 @@ function renderIdle() {
     $('pRamp').textContent = rampText(p.rF);
     $('pHold').textContent = mmss(p.hold);
     $('pAgi').textContent = `${pct(p.duty)} duty`;
+    $('pCut').textContent = `${p.tF + OVERTEMP_MARGIN} °F (target + ${OVERTEMP_MARGIN})`;
   }
 
   $('cTc').textContent = S.tcOk ? '✓ OK' : '✗ ' + S.tcErr;
@@ -547,7 +551,7 @@ function renderRoast(roasting) {
   else                    { $('holdLbl').textContent = 'Heater'; $('holdVal').textContent = 'OFF'; }
 
   $('crackTxt').textContent = S.fc >= 0 ? `1st crack marked at ${mmss(S.fc)} (${fmtF(S.fcT)})` : '';
-  $('limTxt').textContent = roasting ? `Time limit ${Math.round(S.limS / 60)} min, then it cools automatically.` : '';
+  $('limTxt').textContent = roasting ? `Time limit ${Math.round(S.limS / 60)} min, then it cools automatically. Over-temp cutoff ${S.otF} °F.` : '';
 
   $('adjustCard').classList.toggle('hidden', !roasting);
   if (S.tgt != null) $('adjVal').innerHTML = `${F(S.tgt).toFixed(0)} °F<small>${S.tgt.toFixed(0)} °C</small>`;
@@ -602,8 +606,8 @@ $('agiSlider').onchange = async e => { e.target._touched = Date.now(); await api
 // Profile editor
 // ======================================================================
 // Same rule as roastLimitMin() in RoasterApp.ino: ramp + hold + 10 min, 25 min .. 4 h.
-const LIMIT_MIN = 25, LIMIT_MARGIN = 10, LIMIT_MAX = 240, RAMP_MAX = 9999;
-const rampText = r => +r === 0 ? 'Instant (no ramp)' : `${+r} °F/min (${(r / 1.8).toFixed(1)} °C/min)`;
+const LIMIT_MIN = 25, LIMIT_MARGIN = 10, LIMIT_MAX = 240, RAMP_MAX = 150;
+const rampText = r => `${+r} °F/min (${(r / 1.8).toFixed(1)} °C/min)`;
 
 function edRender() {
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
@@ -614,14 +618,13 @@ function edRender() {
   const tot = Math.max(ramp + hold, 0.1);
   $('edStages').style.gridTemplateColumns = `${Math.max(ramp / tot, .08)}fr ${Math.max(hold / tot, .08)}fr .25fr`;
   $('edLbl').style.gridTemplateColumns = $('edStages').style.gridTemplateColumns;
-  $('edLbl').children[0].textContent = r === 0 ? 'Ramp: instant' : `Ramp ≈ ${isNaN(ramp) ? '?' : ramp.toFixed(ramp < 10 ? 1 : 0)} min`;
+  $('edLbl').children[0].textContent = `Ramp ≈ ${isNaN(ramp) ? '?' : ramp.toFixed(ramp < 10 ? 1 : 0)} min`;
   $('edLbl').children[1].textContent = `Hold ${hold} min`;
   const want = ramp + hold + LIMIT_MARGIN, limit = Math.min(Math.max(want, LIMIT_MIN), LIMIT_MAX);
   $('edNote').textContent = (want > LIMIT_MAX)
     ? `⚠ Ramp + hold ≈ ${(ramp + hold).toFixed(0)} min. The roast will be stopped at the ${LIMIT_MAX / 60}-hour maximum. Raise the ramp rate or shorten the hold.`
-    : (r === 0 ? 'Instant: the heater runs as hard as the PID allows until the beans reach the target. '
-               : `Estimated from ${fromF.toFixed(0)} °F. `) +
-      `Time limit for this roast: ${limit.toFixed(0)} min, then it cools automatically.`;
+    : `Estimated from ${fromF.toFixed(0)} °F. Time limit for this roast: ${limit.toFixed(0)} min, then it cools automatically.` +
+      (isNaN(t) ? '' : ` Over-temp cutoff: ${t + OVERTEMP_MARGIN} °F.`);
 }
 function openEditor(i) {
   const p = P[i]; if (!p) return;
@@ -640,7 +643,8 @@ $('edSave').onclick = async () => {
   const t = parseFloat($('edT').value), r = parseFloat($('edR').value), h = parseFloat($('edH').value);
   const duty = parseFloat($('edDuty').value);
   if ([t, r, h, duty].some(isNaN)) { toast('Fill in every field'); return; }
-  if (r < 0 || r > RAMP_MAX) { toast('Ramp must be 0 (instant) to 9999 °F/min'); return; }
+  if (t < TARGET_MIN || t > TARGET_MAX) { toast('Target must be 100-1000 °F'); return; }
+  if (!(r > 0) || r > RAMP_MAX) { toast('Ramp must be above 0 and at most 150 °F/min'); return; }
   if (duty < DUTY_PROFILE_MIN || duty > DUTY_MAX) { toast('Agitator duty must be 1-100 %'); return; }
   if (await api(`profile ${editIdx} ${t} ${r} ${Math.round(h * 60)} ${duty}`)) $('editor').classList.remove('open');
 };
@@ -672,7 +676,7 @@ $('pidApply').onclick = () => {
   if (g.some(isNaN)) { toast('Enter all three gains'); return; }
   api(`pid ${g[0]} ${g[1]} ${g[2]}`);
 };
-const manualDuty = () => { const v = parseFloat($('mDuty').value); return isNaN(v) ? 0 : v; };
+const manualDuty = () => { const v = parseFloat($('mDuty').value); return isNaN(v) ? 0 : Math.min(Math.max(v, 0), HEAT_DUTY_MAX); };
 [...$('manSeg').children].forEach(b => b.onclick = () => api(`manual ${b.dataset.v} ${manualDuty()}`));
 $('mSet').onclick = () => api(`manual ${S && S.man ? 1 : 0} ${manualDuty()}`);
 
